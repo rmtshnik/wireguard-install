@@ -160,6 +160,19 @@ function installQuestions() {
 		read -rp "Server WireGuard port [1-65535]: " -e -i "${RANDOM_PORT}" SERVER_PORT
 	done
 
+	echo ""
+	echo "Firewall management:"
+	echo "  auto: configure firewalld or iptables (default)"
+	echo "  external: use your existing firewall rules, e.g. nftables"
+	until [[ ${FIREWALL_MODE} == 'auto' || ${FIREWALL_MODE} == 'external' ]]; do
+		read -rp "Firewall mode [auto/external]: " FIREWALL_MODE
+		FIREWALL_MODE=${FIREWALL_MODE:-auto}
+	done
+	if [[ ${FIREWALL_MODE} == 'external' ]]; then
+		echo "Allow UDP port ${SERVER_PORT}, VPN forwarding and any required NAT in your firewall."
+		echo "Configure both IPv4 and IPv6 if clients route both through the VPN."
+	fi
+
 	# Cloudflare DNS by default
 	until [[ ${CLIENT_DNS_1} =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; do
 		read -rp "First DNS resolver to use for the clients: " -e -i 1.1.1.1 CLIENT_DNS_1
@@ -189,17 +202,23 @@ function installWireGuard() {
 	# Run setup questions first
 	installQuestions
 
+	# Only request iptables when the installer manages the firewall.
+	local -a FIREWALL_PACKAGES=()
+	if [[ ${FIREWALL_MODE} == 'auto' ]]; then
+		FIREWALL_PACKAGES=(iptables)
+	fi
+
 	# Install WireGuard tools and module
 	if [[ ${OS} == 'ubuntu' ]] || [[ ${OS} == 'debian' && ${VERSION_ID} -gt 10 ]]; then
 		apt-get update
-		installPackages apt-get install -y wireguard iptables resolvconf qrencode
+		installPackages apt-get install -y wireguard "${FIREWALL_PACKAGES[@]}" resolvconf qrencode
 	elif [[ ${OS} == 'debian' ]]; then
 		if ! grep -rqs "^deb .* buster-backports" /etc/apt/; then
 			echo "deb http://deb.debian.org/debian buster-backports main" >/etc/apt/sources.list.d/backports.list
 			apt-get update
 		fi
 		apt-get update
-		installPackages apt-get install -y iptables resolvconf qrencode
+		installPackages apt-get install -y "${FIREWALL_PACKAGES[@]}" resolvconf qrencode
 		installPackages apt-get install -y -t buster-backports wireguard
 	elif [[ ${OS} == 'fedora' ]]; then
 		if [[ ${VERSION_ID} -lt 32 ]]; then
@@ -207,25 +226,25 @@ function installWireGuard() {
 			dnf copr enable -y jdoss/wireguard
 			installPackages dnf install -y wireguard-dkms
 		fi
-		installPackages dnf install -y wireguard-tools iptables qrencode
+		installPackages dnf install -y wireguard-tools "${FIREWALL_PACKAGES[@]}" qrencode
 	elif [[ ${OS} == 'centos' ]] || [[ ${OS} == 'almalinux' ]] || [[ ${OS} == 'rocky' ]]; then
 		if [[ ${VERSION_ID} == 8* ]]; then
 			installPackages yum install -y epel-release elrepo-release
 			installPackages yum install -y kmod-wireguard
 			yum install -y qrencode || true # not available on release 9
 		fi
-		installPackages yum install -y wireguard-tools iptables
+		installPackages yum install -y wireguard-tools "${FIREWALL_PACKAGES[@]}"
 	elif [[ ${OS} == 'oracle' ]]; then
 		installPackages dnf install -y oraclelinux-developer-release-el8
 		dnf config-manager --disable -y ol8_developer
 		dnf config-manager --enable -y ol8_developer_UEKR6
 		dnf config-manager --save -y --setopt=ol8_developer_UEKR6.includepkgs='wireguard-tools*'
-		installPackages dnf install -y wireguard-tools qrencode iptables
+		installPackages dnf install -y wireguard-tools qrencode "${FIREWALL_PACKAGES[@]}"
 	elif [[ ${OS} == 'arch' ]]; then
-		installPackages pacman -S --needed --noconfirm wireguard-tools qrencode
+		installPackages pacman -S --needed --noconfirm wireguard-tools qrencode "${FIREWALL_PACKAGES[@]}"
 	elif [[ ${OS} == 'alpine' ]]; then
 		apk update
-		installPackages apk add wireguard-tools iptables libqrencode-tools
+		installPackages apk add wireguard-tools "${FIREWALL_PACKAGES[@]}" libqrencode-tools
 	fi
 
 	# Verify WireGuard installation
@@ -250,6 +269,7 @@ SERVER_WG_NIC=${SERVER_WG_NIC}
 SERVER_WG_IPV4=${SERVER_WG_IPV4}
 SERVER_WG_IPV6=${SERVER_WG_IPV6}
 SERVER_PORT=${SERVER_PORT}
+FIREWALL_MODE=${FIREWALL_MODE}
 SERVER_PRIV_KEY=${SERVER_PRIV_KEY}
 SERVER_PUB_KEY=${SERVER_PUB_KEY}
 CLIENT_DNS_1=${CLIENT_DNS_1}
@@ -262,7 +282,9 @@ Address = ${SERVER_WG_IPV4}/24,${SERVER_WG_IPV6}/64
 ListenPort = ${SERVER_PORT}
 PrivateKey = ${SERVER_PRIV_KEY}" >"/etc/wireguard/${SERVER_WG_NIC}.conf"
 
-	if pgrep firewalld; then
+	if [[ ${FIREWALL_MODE} == 'external' ]]; then
+		echo "Firewall rules are managed externally; no firewall hooks will be added."
+	elif pgrep firewalld; then
 		FIREWALLD_IPV4_ADDRESS=$(echo "${SERVER_WG_IPV4}" | cut -d"." -f1-3)".0"
 		FIREWALLD_IPV6_ADDRESS=$(echo "${SERVER_WG_IPV6}" | sed 's/:[^:]*$/:0/')
 		echo "PostUp = firewall-cmd --zone=public --add-interface=${SERVER_WG_NIC} && firewall-cmd --add-port ${SERVER_PORT}/udp && firewall-cmd --add-rich-rule='rule family=ipv4 source address=${FIREWALLD_IPV4_ADDRESS}/24 masquerade' && firewall-cmd --add-rich-rule='rule family=ipv6 source address=${FIREWALLD_IPV6_ADDRESS}/24 masquerade'

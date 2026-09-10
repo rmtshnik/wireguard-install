@@ -31,7 +31,7 @@ Supported distributions:
 Download and execute the script. Answer the questions asked by the script and it will take care of the rest.
 
 ```bash
-curl -O https://raw.githubusercontent.com/angristan/wireguard-install/master/wireguard-install.sh
+curl -O https://raw.githubusercontent.com/rmtshnik/wireguard-install/master/wireguard-install.sh
 chmod +x wireguard-install.sh
 ./wireguard-install.sh
 ```
@@ -39,6 +39,55 @@ chmod +x wireguard-install.sh
 It will install WireGuard (kernel module and tools) on the server, configure it, create a systemd service and a client configuration file.
 
 Run the script again to add or remove clients!
+
+## Firewall management
+
+During installation, choose a firewall mode:
+
+- `auto` (default): preserve the original firewalld/iptables setup using `PostUp` and `PostDown` hooks.
+- `external`: manage the firewall yourself, for example with nftables. The installer does not add firewall hooks or explicitly install iptables. It still enables IPv4 and IPv6 forwarding through `/etc/sysctl.d/wg.conf`.
+
+The mode is saved in `/etc/wireguard/params`. This choice applies to new installations; changing that file alone does not remove hooks from an existing configuration. Adding or revoking clients does not change firewall rules. Uninstalling an external-mode installation leaves your firewall rules in place.
+
+### Example with an existing nftables firewall
+
+For `wg0`, public interface `ens3`, and subnet `10.7.0.0/24`, choose server WireGuard IPv4 `10.7.0.1` during setup. The installer otherwise defaults to `10.66.66.1`. Choose `external` and allow the selected WireGuard UDP port in your existing input chain (the installer suggests a random port):
+
+```nft
+# Example only: use the actual ListenPort from wg0.conf.
+# Add to your existing input chain before any matching drop rule:
+iifname "ens3" udp dport 51820 accept
+
+# Add to your existing forward chain before any matching drop rule:
+iifname "wg0" oifname "ens3" ip saddr 10.7.0.0/24 accept
+iifname "ens3" oifname "wg0" ip daddr 10.7.0.0/24 ct state established,related accept
+```
+
+Keep your existing masquerade rule in the IPv4 NAT postrouting chain:
+
+```nft
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr 10.7.0.0/24 oifname "ens3" masquerade
+    }
+}
+```
+
+Merge these rules into your existing persistent ruleset; do not replace or flush it. This example covers IPv4. The installer also configures IPv6 and defaults client AllowedIPs to `0.0.0.0/0,::/0`: provide IPv6 forwarding and routing/NAT rules if you want IPv6 over the VPN. For IPv4-only routing, enter `0.0.0.0/0` at the AllowedIPs prompt; client IPv6 traffic will then remain outside the VPN.
+
+### Migrating an existing installation
+
+Perform the following with access to the server independent of the VPN, since stopping the interface disconnects VPN clients:
+
+1. Back up `/etc/wireguard` securely (it contains private keys) and ensure your persistent nftables rules cover the VPN subnet, UDP port, forwarding and required NAT.
+2. Stop WireGuard **before editing its hooks**, so the original `PostDown` commands can remove the rules added by `PostUp`: `systemctl stop wg-quick@wg0` (Alpine: `rc-service wg-quick.wg0 stop`). Substitute your interface name if different.
+3. Inspect the active firewall rules and stop output. If old rules remain, remove only the installer-created rules using the corresponding firewall tool; never flush your ruleset.
+4. Remove only the installer-generated firewall `PostUp`/`PostDown` lines from `/etc/wireguard/wg0.conf`. Keep any unrelated custom hooks and all interface/peer settings.
+5. Set `FIREWALL_MODE=external` in `/etc/wireguard/params` (add it if missing).
+6. Start WireGuard: `systemctl start wg-quick@wg0` (Alpine: `rc-service wg-quick.wg0 start`). Verify a client handshake and connectivity.
+
+Existing installations are not migrated automatically.
 
 ## Providers
 
