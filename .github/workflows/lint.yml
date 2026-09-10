@@ -17,4 +17,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: mfinelli/setup-shfmt@v3
-      - run: shfmt -d wireguard-install.sh
+      - run: bash -n wireguard-install.sh && bash -n wireguard-backup.sh
+      - run: shfmt -d wireguard-install.sh wireguard-backup.sh
