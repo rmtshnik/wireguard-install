@@ -1,20 +1,14 @@
-# WireGuard installer
+# Установщик WireGuard
 
-![Lint](https://github.com/angristan/wireguard-install/workflows/Lint/badge.svg)
-[![Say Thanks!](https://img.shields.io/badge/Say%20Thanks-!-1EAEDB.svg)](https://saythanks.io/to/angristan)
+![Проверки кода](https://github.com/rmtshnik/wireguard-install/actions/workflows/lint.yml/badge.svg)
 
-**This project is a bash script that aims to setup a [WireGuard](https://www.wireguard.com/) VPN on a Linux server, as easily as possible!**
+Bash-скрипт для установки [WireGuard](https://www.wireguard.com/) на Linux-сервере и управления VPN-клиентами. Это форк [angristan/wireguard-install](https://github.com/angristan/wireguard-install), дополненный режимом самостоятельного управления межсетевым экраном — например, через nftables.
 
-WireGuard is a point-to-point VPN that can be used in different ways. Here, we mean a VPN as in: the client will forward all its traffic through an encrypted tunnel to the server.
-The server will apply NAT to the client's traffic so it will appear as if the client is browsing the web with the server's IP.
+Клиент направляет выбранный трафик через зашифрованный туннель на сервер. При использовании masquerade сайты видят внешний адрес сервера. Скрипт создаёт конфигурации IPv4 и IPv6.
 
-The script supports both IPv4 and IPv6. Please check the [issues](https://github.com/angristan/wireguard-install/issues) for ongoing development, bugs and planned features! You might also want to check the [discussions](https://github.com/angristan/wireguard-install/discussions) for help.
+## Требования
 
-WireGuard does not fit your environment? Check out [openvpn-install](https://github.com/angristan/openvpn-install).
-
-## Requirements
-
-Supported distributions:
+Нужен доступ root. Скрипт предусматривает следующие дистрибутивы (этот список не означает, что все версии проверены в данном форке):
 
 - AlmaLinux >= 8
 - Alpine Linux
@@ -26,97 +20,193 @@ Supported distributions:
 - Rocky Linux >= 8
 - Ubuntu >= 18.04
 
-## Usage
+## Установка и управление клиентами
 
-Download and execute the script. Answer the questions asked by the script and it will take care of the rest.
+Скачайте скрипт и запустите его от root:
 
 ```bash
-curl -O https://raw.githubusercontent.com/rmtshnik/wireguard-install/master/wireguard-install.sh
+curl -fO https://raw.githubusercontent.com/rmtshnik/wireguard-install/master/wireguard-install.sh
 chmod +x wireguard-install.sh
 ./wireguard-install.sh
 ```
 
-It will install WireGuard (kernel module and tools) on the server, configure it, create a systemd service and a client configuration file.
+Ответьте на вопросы установщика. Он установит WireGuard и необходимые инструменты, создаст конфигурацию сервера, настроит службу systemd (OpenRC на Alpine) и предложит создать первого клиента.
 
-Run the script again to add or remove clients!
+Сеть VPN выбирайте самостоятельно: она не должна пересекаться с сетями сервера, клиентов и другими сетями, к которым нужен доступ. Текущий скрипт использует маску `/24` для IPv4 и `/64` для IPv6. Для совместимости с выдачей клиентских адресов используйте адрес сервера вида `X.Y.Z.1` и IPv6-адрес вида `fdXX:XXXX:XXXX::1`.
 
-## Firewall management
+Например, для выбранной сети `10.66.66.0/24` адрес сервера будет `10.66.66.1`. Это только пример, а не обязательная сеть.
 
-During installation, choose a firewall mode:
+Повторный запуск открывает меню добавления, просмотра и отзыва клиентов, а также удаления WireGuard.
 
-- `auto` (default): preserve the original firewalld/iptables setup using `PostUp` and `PostDown` hooks.
-- `external`: manage the firewall yourself, for example with nftables. The installer does not add firewall hooks or explicitly install iptables. It still enables IPv4 and IPv6 forwarding through `/etc/sysctl.d/wg.conf`.
+## Управление межсетевым экраном
 
-The mode is saved in `/etc/wireguard/params`. This choice applies to new installations; changing that file alone does not remove hooks from an existing configuration. Adding or revoking clients does not change firewall rules. Uninstalling an external-mode installation leaves your firewall rules in place.
+При установке выберите режим:
 
-### Example with an existing nftables firewall
+- `auto` — режим по умолчанию. Скрипт добавляет команды firewalld либо iptables в `PostUp`/`PostDown`: правила создаются при запуске интерфейса и удаляются при его остановке.
+- `external` — правилами управляете вы. Скрипт не добавляет firewall-хуки и не запрашивает установку iptables. Используйте этот режим, если уже настраиваете nftables самостоятельно.
 
-For `wg0`, public interface `ens3`, and subnet `10.7.0.0/24`, choose server WireGuard IPv4 `10.7.0.1` during setup. The installer otherwise defaults to `10.66.66.1`. Choose `external` and allow the selected WireGuard UDP port in your existing input chain (the installer suggests a random port):
+В обоих режимах скрипт включает маршрутизацию IPv4 и IPv6 через `/etc/sysctl.d/wg.conf`. Выбор сохраняется в `/etc/wireguard/params`. Добавление и отзыв клиентов не меняют правила firewall. При удалении установки в режиме `external` ваши правила nftables сохраняются.
+
+### Пример правил nftables
+
+**Не забудьте добавить разрешающие правила в ваш nftables перед подключением клиентов.** Нужны:
+
+1. Входящий UDP на порт WireGuard.
+2. Пересылка трафика из VPN во внешний интерфейс.
+3. Пересылка ответного трафика обратно в VPN.
+4. Masquerade для выбранной частной IPv4-сети, если у неё нет отдельной маршрутизации в интернете.
+
+Замените параметры примера своими значениями. Порт должен совпадать с `ListenPort` в конфигурации сервера: установщик предлагает случайный порт, не обязательно `51820`.
 
 ```nft
-# Example only: use the actual ListenPort from wg0.conf.
-# Add to your existing input chain before any matching drop rule:
-iifname "ens3" udp dport 51820 accept
-
-# Add to your existing forward chain before any matching drop rule:
-iifname "wg0" oifname "ens3" ip saddr 10.7.0.0/24 accept
-iifname "ens3" oifname "wg0" ip daddr 10.7.0.0/24 ct state established,related accept
+# Параметры в начале вашего файла nftables
+define WAN_IF = "ens3"
+define WG_IF = "wg0"
+define WG_PORT = 51820
+define WG_NET4 = 10.66.66.0/24
 ```
 
-Keep your existing masquerade rule in the IPv4 NAT postrouting chain:
+Ниже показаны **фрагменты существующих цепочек**, а не готовая замена вашего firewall. Вставьте правила в соответствующие цепочки перед подходящими правилами `drop`/`reject`. Не создавайте повторно таблицы и цепочки, если они уже есть, и не добавляйте дубли существующих правил.
 
 ```nft
-table ip nat {
-    chain postrouting {
-        type nat hook postrouting priority srcnat; policy accept;
-        ip saddr 10.7.0.0/24 oifname "ens3" masquerade
+table inet filter {
+    # ============================================================
+    # ЦЕПОЧКА INPUT — ВХОДЯЩИЙ ТРАФИК К СЕРВЕРУ
+    # ============================================================
+    chain input {
+        # В существующей цепочке сохраняются hook, policy и остальные правила
+        iifname $WAN_IF udp dport $WG_PORT accept
+    }
+
+    # ============================================================
+    # ЦЕПОЧКА FORWARD — ТРАФИК МЕЖДУ ИНТЕРФЕЙСАМИ
+    # ============================================================
+    chain forward {
+        iifname $WG_IF oifname $WAN_IF ip saddr $WG_NET4 accept
+        iifname $WAN_IF oifname $WG_IF ip daddr $WG_NET4 ct state established,related accept
     }
 }
 ```
 
-Merge these rules into your existing persistent ruleset; do not replace or flush it. This example covers IPv4. The installer also configures IPv6 and defaults client AllowedIPs to `0.0.0.0/0,::/0`: provide IPv6 forwarding and routing/NAT rules if you want IPv6 over the VPN. For IPv4-only routing, enter `0.0.0.0/0` at the AllowedIPs prompt; client IPv6 traffic will then remain outside the VPN.
+Правило NAT поместите в существующую цепочку postrouting. Если таблицы и цепочки NAT ещё нет, её структура может выглядеть так:
 
-### Migrating an existing installation
+```nft
+table ip nat {
+    # ============================================================
+    # ЦЕПОЧКА POSTROUTING — ПОДМЕНА АДРЕСА ПРИ ВЫХОДЕ В ИНТЕРНЕТ
+    # ============================================================
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr $WG_NET4 oifname $WAN_IF masquerade
+    }
+}
+```
 
-Perform the following with access to the server independent of the VPN, since stopping the interface disconnects VPN clients:
+Пример предполагает, что остальные правила вашего firewall разрешают необходимый служебный трафик и исходящий трафик сервера. Правила доступа к сервисам самого сервера через VPN добавляются отдельно в `input`.
 
-1. Back up `/etc/wireguard` securely (it contains private keys) and ensure your persistent nftables rules cover the VPN subnet, UDP port, forwarding and required NAT.
-2. Stop WireGuard **before editing its hooks**, so the original `PostDown` commands can remove the rules added by `PostUp`: `systemctl stop wg-quick@wg0` (Alpine: `rc-service wg-quick.wg0 stop`). Substitute your interface name if different.
-3. Inspect the active firewall rules and stop output. If old rules remain, remove only the installer-created rules using the corresponding firewall tool; never flush your ruleset.
-4. Remove only the installer-generated firewall `PostUp`/`PostDown` lines from `/etc/wireguard/wg0.conf`. Keep any unrelated custom hooks and all interface/peer settings.
-5. Set `FIREWALL_MODE=external` in `/etc/wireguard/params` (add it if missing).
-6. Start WireGuard: `systemctl start wg-quick@wg0` (Alpine: `rc-service wg-quick.wg0 start`). Verify a client handshake and connectivity.
+Сохраните изменения в постоянной конфигурации вашей системы. Для проверки полного файла без применения можно использовать `nft -c -f /etc/nftables.conf`, если ваша конфигурация находится по этому пути. Проверка синтаксиса не заменяет проверку соединения и порядка правил. Не очищайте действующий набор правил командой `flush ruleset` ради добавления VPN.
 
-Existing installations are not migrated automatically.
+## IPv6: включение и отключение
 
-## Providers
+### Что уже делает скрипт
 
-I recommend these cheap cloud providers for your VPN server:
+Отдельного переключателя «включить/выключить IPv6» в текущем установщике нет. Он всегда запрашивает IPv6-адрес, добавляет IPv6 в конфигурации сервера и клиентов и включает `net.ipv6.conf.all.forwarding = 1`.
 
-- [Vultr](https://www.vultr.com/?ref=8948982-8H): Worldwide locations, IPv6 support, starting at \$5/month
-- [Hetzner](https://hetzner.cloud/?ref=ywtlvZsjgeDq): Germany, Finland and USA. IPv6, 20 TB of traffic, starting at 4.5€/month
-- [Digital Ocean](https://m.do.co/c/ed0ba143fe53): Worldwide locations, IPv6 support, starting at \$4/month
+Параметр клиента `AllowedIPs` определяет, какой трафик направляется в туннель:
 
-## Contributing
+| Значение | Маршрутизация |
+| --- | --- |
+| `0.0.0.0/0,::/0` | Весь IPv4 и IPv6 через VPN |
+| `0.0.0.0/0` | Только IPv4 через VPN; IPv6 может идти напрямую через сеть клиента |
 
-Contributions are welcome! Here's how you can help:
+### Как использовать IPv6 через VPN
 
-### Discuss changes
+Необходимы следующие условия:
 
-Please open an issue before submitting a PR if you want to discuss a change, especially if it's a big one.
+- На сервере работает выход в IPv6-интернет: есть глобальный IPv6-адрес и маршрут по умолчанию.
+- IPv6 включён в сетевом стеке клиента и сервера; на интерфейсах WireGuard назначены IPv6-адреса.
+- У клиента в `[Peer]` указан `AllowedIPs = 0.0.0.0/0,::/0`.
+- На сервере включена IPv6-маршрутизация и разрешена пересылка в firewall.
+- Для частной ULA-сети VPN настроен NAT66 (masquerade). Альтернатива — выделенный провайдером глобальный префикс с маршрутом к VPN-клиентам; тогда NAT66 не нужен. Одного наличия глобального адреса на сервере для маршрутизации клиентского префикса недостаточно.
 
-### Code formatting
+Для ULA-сети добавьте параметр, соответствующий **вашей** IPv6-сети WireGuard:
 
-We use [shellcheck](https://github.com/koalaman/shellcheck) and [shfmt](https://github.com/mvdan/sh) to enforce bash styling guidelines and good practices. They are executed for each commit / PR with GitHub Actions, so you can check the configuration [here](https://github.com/angristan/wireguard-install/blob/master/.github/workflows/lint.yml).
+```nft
+define WG_NET6 = fd42:42:42::/64
+```
 
-## Say thanks
+Дополните существующую цепочку `forward` таблицы `inet filter`:
 
-You can [say thanks](https://saythanks.io/to/angristan) if you want!
+```nft
+# IPv6: из VPN в интернет и ответный трафик
+iifname $WG_IF oifname $WAN_IF ip6 saddr $WG_NET6 accept
+iifname $WAN_IF oifname $WG_IF ip6 daddr $WG_NET6 ct state established,related accept
+```
 
-## Credits & Licence
+Для ULA-адресов добавьте masquerade в IPv6 NAT:
 
-This project is under the [MIT Licence](https://raw.githubusercontent.com/angristan/wireguard-install/master/LICENSE)
+```nft
+table ip6 nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip6 saddr $WG_NET6 oifname $WAN_IF masquerade
+    }
+}
+```
 
-## Star History
+IPv6 также требует служебного ICMPv6, включая обнаружение соседей и сообщения об ошибках/MTU. Не блокируйте его целиком. Если ваш firewall ещё не разрешает ICMPv6, простой вариант для существующей цепочки `input` таблицы `inet filter`:
 
-[![Star History Chart](https://api.star-history.com/svg?repos=angristan/wireguard-install&type=Date)](https://star-history.com/#angristan/wireguard-install&Date)
+```nft
+meta l4proto ipv6-icmp accept
+```
+
+При ограничивающей политике `output` разрешите необходимый исходящий ICMPv6 и UDP WireGuard; также проверьте прохождение связанных ICMPv6-ошибок в `forward`. Подробности: [пример nftables для IPv4/IPv6](https://wiki.nftables.org/wiki-nftables/index.php/Simple_ruleset_for_a_workstation), [документация nftables](https://netfilter.org/projects/nftables/manpage.html).
+
+Если сервер получает маршрут IPv6 через Router Advertisement, включение forwarding может изменить приём RA. Для такого внешнего интерфейса может потребоваться `net.ipv6.conf.ens3.accept_ra = 2` (замените `ens3` своим интерфейсом). При статической настройке маршрутов это обычно не требуется.
+
+### Как исключить IPv6 из VPN
+
+При установке введите `0.0.0.0/0` в поле AllowedIPs. Для существующих клиентов измените `AllowedIPs` в их конфигурациях и переподключите VPN. Чтобы это значение использовалось при создании новых клиентов, установите `ALLOWED_IPS=0.0.0.0/0` в `/etc/wireguard/params`; уже выданные файлы автоматически не обновляются.
+
+**Это не отключает IPv6 на устройстве.** Если сеть клиента предоставляет IPv6, приложения могут обращаться к сайтам напрямую, вне VPN. Если нужен VPN только с IPv4 без обхода через IPv6, дополнительно отключите IPv6 на клиенте либо заблокируйте его вне туннеля средствами клиентского firewall. Точный способ зависит от ОС клиента.
+
+Полного отключения IPv6 на сервере через меню скрипта нет. Одно изменение AllowedIPs не удаляет IPv6-адреса, маршрутизацию или NAT. Не отключайте IPv6 системно на сервере ради этого параметра: его могут использовать другие службы. Для текущего режима `external` можно не добавлять IPv6-правила VPN, если IPv6 через туннель не используется.
+
+### Можно ли заходить на IPv6-сайты, подключившись к VPN по IPv4?
+
+**Да.** Адрес `Endpoint` определяет, как клиент связывается с сервером, а внутренний трафик туннеля может быть IPv4 или IPv6 независимо от этого. [WireGuard поддерживает обе версии IP](https://www.wireguard.com/).
+
+Например: клиент с IPv4-интернетом → WireGuard по UDP/IPv4 → сервер → сайт по IPv6. Нативное IPv6-подключение у провайдера клиента для этого не требуется, но IPv6 в ОС клиента должен быть включён. На сервере должны выполняться условия из раздела выше. Сам по себе WireGuard не создаёт IPv6-доступ, если его нет у сервера.
+
+Проверяйте не только handshake: отдельно проверьте доступ к IPv4- и IPv6-ресурсам с подключённого клиента. Например, `curl -6 https://www.wireguard.com/` проверяет IPv6-доступ к этому сайту, если он доступен по IPv6 и на клиенте установлен curl.
+
+## Переход существующей установки на external
+
+Остановка интерфейса отключит VPN-клиентов, поэтому используйте доступ к серверу, не зависящий от этого туннеля.
+
+1. Сделайте защищённую резервную копию `/etc/wireguard` — в ней есть приватные ключи. Подготовьте постоянные правила nftables для выбранных сетей, UDP-порта, пересылки и NAT.
+2. **До редактирования хуков** остановите WireGuard: `systemctl stop wg-quick@wg0`. На Alpine: `rc-service wg-quick.wg0 stop`. Замените `wg0` именем своего интерфейса. Так прежние команды `PostDown` смогут снять правила, добавленные при запуске.
+3. Проверьте результат остановки и действующие правила. Если правила установщика остались, удалите только их соответствующим инструментом firewall, не очищая весь набор.
+4. Удалите из `/etc/wireguard/wg0.conf` только созданные установщиком firewall-команды `PostUp`/`PostDown`. Сохраните собственные хуки и настройки интерфейса и клиентов.
+5. Добавьте или измените строку `FIREWALL_MODE=external` в `/etc/wireguard/params`.
+6. Запустите WireGuard: `systemctl start wg-quick@wg0`; на Alpine: `rc-service wg-quick.wg0 start`. Проверьте handshake и доступ клиента в интернет.
+
+Автоматическая миграция не выполняется. Изменение только `/etc/wireguard/params` не удаляет прежние хуки.
+
+## Участие в разработке
+
+Ошибки и предложения для форка можно оставить в [Issues](https://github.com/rmtshnik/wireguard-install/issues). Перед крупными изменениями желательно обсудить подход. Историю исходного проекта можно найти в его [Issues](https://github.com/angristan/wireguard-install/issues) и [обсуждениях](https://github.com/angristan/wireguard-install/discussions).
+
+Для проверки кода используются [ShellCheck](https://github.com/koalaman/shellcheck) и [shfmt](https://github.com/mvdan/sh). Настройки CI находятся в [.github/workflows/lint.yml](.github/workflows/lint.yml).
+
+```bash
+bash -n wireguard-install.sh
+shellcheck -e SC1091,SC1117,SC2001,SC2034 wireguard-install.sh
+shfmt -d wireguard-install.sh
+```
+
+Эти проверки не подтверждают работоспособность VPN: установку, firewall и передачу трафика нужно дополнительно проверять в тестовой Linux-системе.
+
+## Благодарности и лицензия
+
+Основано на проекте [angristan/wireguard-install](https://github.com/angristan/wireguard-install). Лицензия — [MIT](LICENSE). Автору исходного проекта можно [сказать спасибо](https://saythanks.io/to/angristan).
