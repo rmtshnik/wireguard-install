@@ -162,11 +162,22 @@ function installQuestions() {
 
 	echo ""
 	echo "Firewall management:"
-	echo "  auto: configure firewalld or iptables (default)"
-	echo "  external: use your existing firewall rules, e.g. nftables"
+	echo "  1) auto: configure firewalld or iptables (default)"
+	echo "  2) external: use your existing firewall rules, e.g. nftables"
+	local FIREWALL_CHOICE
 	until [[ ${FIREWALL_MODE} == 'auto' || ${FIREWALL_MODE} == 'external' ]]; do
-		read -rp "Firewall mode [auto/external]: " FIREWALL_MODE
-		FIREWALL_MODE=${FIREWALL_MODE:-auto}
+		read -rp "Firewall mode [1-2] (default: 1): " FIREWALL_CHOICE
+		case "${FIREWALL_CHOICE:-1}" in
+		1)
+			FIREWALL_MODE=auto
+			;;
+		2)
+			FIREWALL_MODE=external
+			;;
+		*)
+			echo "Please enter 1 or 2."
+			;;
+		esac
 	done
 	if [[ ${FIREWALL_MODE} == 'external' ]]; then
 		echo "Allow UDP port ${SERVER_PORT}, VPN forwarding and any required NAT in your firewall."
