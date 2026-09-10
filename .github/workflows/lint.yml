@@ -3,6 +3,12 @@ on: [push, pull_request, pull_request_target]
 name: Lint
 
 jobs:
+  restore-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -B -m unittest discover -s tests -v
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:

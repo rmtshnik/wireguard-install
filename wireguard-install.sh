@@ -8,6 +8,37 @@ ORANGE='\033[0;33m'
 GREEN='\033[0;32m'
 NC='\033[0m'
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+function backupMenu() {
+	local destination extra
+	if [[ ! -f ${SCRIPT_DIR}/wireguard-backup.sh ]]; then
+		echo "Download wireguard-backup.sh next to wireguard-install.sh (see README)."
+		return 1
+	fi
+	read -rp "Backup directory [/root/wireguard-backups]: " destination
+	read -rp "Additional client directory (optional; /root and /home are always searched): " extra
+	if [[ -n ${extra} ]]; then
+		bash "${SCRIPT_DIR}/wireguard-backup.sh" "${destination:-/root/wireguard-backups}" "${extra}"
+	else
+		bash "${SCRIPT_DIR}/wireguard-backup.sh" "${destination:-/root/wireguard-backups}"
+	fi
+}
+
+function restoreMenu() {
+	local archive
+	if [[ ! -f ${SCRIPT_DIR}/wireguard-restore.py ]]; then
+		echo "Download wireguard-restore.py next to wireguard-install.sh (see README)."
+		return 1
+	fi
+	if ! command -v python3 &>/dev/null; then
+		echo "Install Python 3.8 or later before restoring (see README)."
+		return 1
+	fi
+	read -rp "Path to the backup archive (.tar.gz): " archive
+	python3 "${SCRIPT_DIR}/wireguard-restore.py" "${archive}"
+}
+
 function installPackages() {
 	if ! "$@"; then
 		echo -e "${RED}Failed to install packages.${NC}"
@@ -598,10 +629,12 @@ function manageMenu() {
 	echo "   1) Add a new user"
 	echo "   2) List all users"
 	echo "   3) Revoke existing user"
-	echo "   4) Uninstall WireGuard"
-	echo "   5) Exit"
-	until [[ ${MENU_OPTION} =~ ^[1-5]$ ]]; do
-		read -rp "Select an option [1-5]: " MENU_OPTION
+	echo "   4) Back up WireGuard"
+	echo "   5) Restore WireGuard from backup"
+	echo "   6) Uninstall WireGuard"
+	echo "   7) Exit"
+	until [[ ${MENU_OPTION} =~ ^[1-7]$ ]]; do
+		read -rp "Select an option [1-7]: " MENU_OPTION
 	done
 	case "${MENU_OPTION}" in
 	1)
@@ -614,9 +647,15 @@ function manageMenu() {
 		revokeClient
 		;;
 	4)
-		uninstallWg
+		backupMenu
 		;;
 	5)
+		restoreMenu
+		;;
+	6)
+		uninstallWg
+		;;
+	7)
 		exit 0
 		;;
 	esac
@@ -630,5 +669,22 @@ if [[ -e /etc/wireguard/params ]]; then
 	source /etc/wireguard/params
 	manageMenu
 else
-	installWireGuard
+	echo "1) Install WireGuard (default)"
+	echo "2) Restore WireGuard from backup (requires installed WireGuard tools)"
+	echo "3) Exit"
+	until [[ ${SETUP_OPTION} =~ ^[1-3]$ ]]; do
+		read -rp "Select an option [1-3] (default: 1): " SETUP_OPTION
+		SETUP_OPTION=${SETUP_OPTION:-1}
+	done
+	case "${SETUP_OPTION}" in
+	1)
+		installWireGuard
+		;;
+	2)
+		restoreMenu
+		;;
+	3)
+		exit 0
+		;;
+	esac
 fi
